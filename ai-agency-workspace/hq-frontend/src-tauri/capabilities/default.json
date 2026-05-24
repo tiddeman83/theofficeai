@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "/Users/tijmenbaas/Development/TheOffice/ai-agency-workspace/hq-backend/task_queue/*" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/task_queue/*" }
+      ]
+    }
+  ]
+}

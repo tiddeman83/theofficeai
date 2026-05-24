@@ -1,0 +1,24 @@
+.env
+__pycache__/
+node_modules/
+.venv/
+*.pyc
+.DS_Store
+# Secrets
+.env
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# Node & Tauri
+node_modules/
+hq-frontend/dist/
+hq-frontend/src-tauri/target/
+
+# Agency Ephemera & Sandboxes
+sandbox/
+hq-backend/task_queue/*.json
+hq-backend/task_queue/processed/*.json
+hq-backend/task_queue/failed/*.json
