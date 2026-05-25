@@ -7,11 +7,29 @@
   ],
   "permissions": [
     "core:default",
+    "dialog:default",
     {
       "identifier": "fs:allow-write-text-file",
       "allow": [
-        { "path": "/Users/tijmenbaas/Development/TheOffice/ai-agency-workspace/hq-backend/task_queue/*" },
-        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/task_queue/*" }
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/task_queue/*" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/epic_queue/*" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/project_queue/*" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/projects/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/status_log" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/projects" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/projects/*" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/status_log/*" },
+        { "path": "$HOME/Development/TheOffice/ai-agency-workspace/hq-backend/projects/**" }
       ]
     }
   ]

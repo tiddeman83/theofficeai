@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "slug": "mqtt_trinity_template",
+      "tags": [
+        "pattern:pub_sub",
+        "domain:agent_orchestration",
+        "stack:python",
+        "stack:mqtt"
+      ]
+    }
+  ]
+}

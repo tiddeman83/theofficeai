@@ -22,3 +22,5 @@ sandbox/
 hq-backend/task_queue/*.json
 hq-backend/task_queue/processed/*.json
 hq-backend/task_queue/failed/*.json
+hq-backend/status_log/*.json
+hq-backend/status_log/*.jsonl

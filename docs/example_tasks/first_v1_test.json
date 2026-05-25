@@ -1,0 +1,7 @@
+{
+  "task_id": "studiebuddy-arch-001",
+  "type": "architecture",
+  "prompt": "Draft the initial architecture for StudieBuddy, a homework planning application optimized for the specific workload and subjects of a VWO2 curriculum. Define a React component structure for the frontend, and a Python database schema for managing subjects, assignments, and test schedules. Output the technical specification to architecture.md.",
+  "workspace_path": "/Users/tijmenbaas/Development/Sandbox_TheOffice",
+  "timeout": 300
+}

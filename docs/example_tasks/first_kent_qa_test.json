@@ -1,0 +1,7 @@
+{
+  "task_id": "studiebuddy-qa-001",
+  "type": "qa",
+  "prompt": "Read architecture.md in the workspace root. Identify the StudieBuddy Python database schema (subjects, assignments, test_schedules). Write pytest tests at tests/test_models.py that cover, at minimum: (1) creating a Subject with a valid name; (2) rejecting duplicate Subject names; (3) creating an Assignment with a due_date linked to a Subject; (4) rejecting Assignments with a due_date in the past; (5) listing TestSchedules ordered by date ascending; (6) cascading delete from Subject removes its Assignments. Tests must run with `pytest tests/`. The schema implementation does NOT exist yet — failing (RED) tests are the correct deliverable. Capture the pytest run output to tests/.kent_run.log and commit both files together. Do NOT write production code (models, schema, ORM). Tests only. If architecture.md is missing, return routing_error.",
+  "workspace_path": "/Users/tijmenbaas/Development/Sandbox_TheOffice",
+  "timeout": 300
+}

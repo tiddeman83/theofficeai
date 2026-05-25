@@ -26,3 +26,10 @@
 *   Build the React/Tailwind frontend.
 *   Implement the 2D landscape visualization (HQ, Post Office, Branch Offices).
 *   Wire the UI to the Python HQ backend.
+
+### Version 2: Mature Control Loop
+*   Close the return path with `hq_status_listener.py` and a persisted `status_log/` feed.
+*   Require explicit workspace targeting from the HQ Command Center.
+*   Add QA routing to Kent's dedicated branch topic.
+*   Harden Branch Daemon Git lifecycle handling: verify Git workspace, refuse dirty trees, refuse duplicate task branches, restore the original base branch on abort, and report `base_branch` / `file_changes` metadata.
+*   Add fast contract tests for router validation and worker security behavior.

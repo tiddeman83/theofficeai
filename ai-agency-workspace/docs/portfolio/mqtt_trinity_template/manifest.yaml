@@ -1,0 +1,18 @@
+slug: mqtt_trinity_template
+summary: MQTT pub/sub pattern for multi-agent orchestration (HQ → Broker → Branch daemons)
+tags:
+  - pattern:pub_sub
+  - domain:agent_orchestration
+  - stack:python
+  - stack:mqtt
+language: python
+originating_project: theoffice-bootstrap
+files:
+  - hq_router.py
+  - hq_project_manager.py
+  - hq_epic_manager.py
+  - hq_status_listener.py
+  - branch-daemon/worker_node.py
+  - branch-daemon/start_kent.sh
+  - branch-daemon/stop_kent.sh
+added_at: "2026-05-25T09:30:00Z"
