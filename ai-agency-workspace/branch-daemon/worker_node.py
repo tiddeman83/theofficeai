@@ -363,6 +363,14 @@ def parse_task_payload(payload):
     prompt = validate_non_empty_string(data["prompt"], "prompt")
     repo_path = validate_non_empty_string(data["repo_path"], "repo_path")
 
+    # BRANCH_PERSONA lets a pool member override the routed agent so an
+    # assistant (e.g. branch_donald) loads its own persona invocation instead
+    # of the senior's (Linus). Router still picks the topic by task_type;
+    # daemon decides which persona file to prepend.
+    persona_override = os.getenv("BRANCH_PERSONA")
+    if persona_override and persona_override.strip():
+        agent = persona_override.strip()
+
     return {
         "task_id": task_id,
         "agent": agent,

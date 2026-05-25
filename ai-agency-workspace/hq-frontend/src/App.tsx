@@ -94,6 +94,19 @@ interface ProjectManifest {
   updated_at: string;
 }
 
+// Shape written by hq_issue_listener.py into projects/{id}/issues/{iss}.json.
+interface ProjectIssue {
+  issue_id: string;
+  project_id: string;
+  from_agent: string;
+  task_id?: string;
+  severity: 'info' | 'question' | 'block';
+  subject: string;
+  body?: string;
+  requires?: 'ceo' | 'cto';
+  created_at: string;
+}
+
 // Lowercase alnum, dashes instead of non-alnum, no leading/trailing dashes.
 const safeSlug = (input: string): string =>
   input.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -147,6 +160,8 @@ export default function App() {
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
   // Per-project board decision drafts keyed by project_id
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, string>>({});
+  // Issues keyed by project_id
+  const [issuesByProject, setIssuesByProject] = useState<Record<string, ProjectIssue[]>>({});
 
   useEffect(() => {
     // Animate mock metrics for dynamic, live-system aesthetic
@@ -205,6 +220,7 @@ export default function App() {
         const projectsDir = `${home}/Development/TheOffice/ai-agency-workspace/hq-backend/projects`;
         const topEntries = await readDir(projectsDir);
         const manifests: ProjectManifest[] = [];
+        const collectedIssues: Record<string, ProjectIssue[]> = {};
         for (const entry of topEntries) {
           if (entry.isFile) continue;
           try {
@@ -214,9 +230,31 @@ export default function App() {
           } catch {
             // Manifest not yet written; skip until next poll.
           }
+          // Load issues for this project (may be empty).
+          try {
+            const issuesDir = `${projectsDir}/${entry.name}/issues`;
+            const issueEntries = await readDir(issuesDir);
+            const list: ProjectIssue[] = [];
+            for (const ie of issueEntries) {
+              if (!ie.isFile || !ie.name.endsWith('.json') || ie.name.startsWith('_')) continue;
+              try {
+                const issueText = await readTextFile(`${issuesDir}/${ie.name}`);
+                list.push(JSON.parse(issueText) as ProjectIssue);
+              } catch {
+                // Mid-write or malformed; retry next poll.
+              }
+            }
+            list.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+            if (list.length > 0) collectedIssues[entry.name] = list;
+          } catch {
+            // Issues dir may not exist yet.
+          }
         }
         manifests.sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''));
-        if (!cancelled) setProjects(manifests);
+        if (!cancelled) {
+          setProjects(manifests);
+          setIssuesByProject(collectedIssues);
+        }
       } catch {
         // projects dir not yet present; leave state untouched.
       }
@@ -910,6 +948,50 @@ export default function App() {
                           </button>
                         </div>
                       )}
+
+                      {(() => {
+                        const issues = issuesByProject[p.project_id] ?? [];
+                        if (issues.length === 0) return null;
+                        const blocking = issues.filter(i => i.severity === 'block');
+                        const questions = issues.filter(i => i.severity === 'question');
+                        const headerColor = blocking.length > 0
+                          ? 'text-rose-300 border-rose-500/30'
+                          : questions.length > 0
+                            ? 'text-amber-300 border-amber-500/30'
+                            : 'text-slate-300 border-slate-700';
+                        return (
+                          <div className={`mt-2 pt-2 border-t ${headerColor}`}>
+                            <div className={`text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 ${headerColor}`}>
+                              <MessageSquareWarning className="w-3 h-3" />
+                              Issues ({issues.length}{blocking.length > 0 ? `, ${blocking.length} block` : ''})
+                            </div>
+                            <ul className="mt-1 space-y-1 max-h-[120px] overflow-y-auto">
+                              {issues.slice(0, 5).map(iss => {
+                                const sevDot = iss.severity === 'block'
+                                  ? 'bg-rose-500'
+                                  : iss.severity === 'question'
+                                    ? 'bg-amber-500'
+                                    : 'bg-slate-500';
+                                return (
+                                  <li key={iss.issue_id} className="flex items-start gap-1.5 text-[10px] text-slate-300">
+                                    <span className={`mt-1 w-1.5 h-1.5 rounded-full ${sevDot} flex-shrink-0`}></span>
+                                    <span className="flex-1 break-words">
+                                      <span className="font-mono text-slate-500">{iss.from_agent}:</span>{' '}
+                                      <span className="text-slate-200">{iss.subject}</span>
+                                      {iss.requires && (
+                                        <span className="ml-1 text-[8px] uppercase font-bold text-slate-500">→{iss.requires}</span>
+                                      )}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                              {issues.length > 5 && (
+                                <li className="text-[9px] text-slate-500 italic">+{issues.length - 5} more</li>
+                              )}
+                            </ul>
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}

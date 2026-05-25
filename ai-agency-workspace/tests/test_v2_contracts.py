@@ -408,11 +408,265 @@ class ProjectManagerContractTests(unittest.TestCase):
             finally:
                 self._restore_dirs(old)
 
+    def _setup_project_at_poc(self, root):
+        """Helper: create project, drive spec to completion, return (project_dir, manifest)."""
+        old = self._patch_dirs(root)
+        intake = project_manager.PROJECT_QUEUE_DIR / "poc.intake.json"
+        intake.write_text(json.dumps({
+            "name": "POC Project",
+            "ceo_brief": "Build a POC.",
+            "workspace_path": "/tmp/poc",
+            "project_id": "poc-test-proj",
+        }), encoding="utf-8")
+        project_manager.run_once()
+        project_dir = next(p for p in project_manager.PROJECTS_DIR.iterdir() if p.is_dir())
+        manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        # Spec stage: mark success, approve.
+        spec_task_id = manifest["current_task_id"]
+        (project_dir / "spec.md").write_text("# Spec", encoding="utf-8")
+        (project_manager.STATUS_DIR / f"{spec_task_id}.json").write_text(
+            json.dumps({"task_id": spec_task_id, "status": "success", "agent": "Linus"}), encoding="utf-8"
+        )
+        project_manager.run_once()
+        (project_dir / "ceo_approval.flag").touch()
+        project_manager.run_once()
+        manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+        # Now at wireframe stage; mark success + approve.
+        wire_task_id = manifest["current_task_id"]
+        (project_manager.STATUS_DIR / f"{wire_task_id}.json").write_text(
+            json.dumps({"task_id": wire_task_id, "status": "success", "agent": "Pixel"}), encoding="utf-8"
+        )
+        project_manager.run_once()
+        (project_dir / "ceo_approval.flag").touch()
+        project_manager.run_once()
+        manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+        # Now at poc stage.
+        return old, project_dir, manifest
+
+    def test_epic_stage_picks_up_decompose_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, project_dir, manifest = self._setup_project_at_poc(root)
+            try:
+                self.assertEqual(manifest["stage"], "poc")
+                decompose_task_id = manifest["current_task_id"]
+
+                # Linus produces poc_epic.json.
+                epic_tasks = [
+                    {"task_id": "poc-task-1", "type": "backend", "prompt": "build it",
+                     "workspace_path": "/tmp/poc", "depends_on": []},
+                    {"task_id": "poc-task-2", "type": "frontend", "prompt": "show it",
+                     "workspace_path": "/tmp/poc", "depends_on": ["poc-task-1"]},
+                ]
+                (project_dir / "poc_epic.json").write_text(json.dumps(epic_tasks), encoding="utf-8")
+                (project_manager.STATUS_DIR / f"{decompose_task_id}.json").write_text(
+                    json.dumps({"task_id": decompose_task_id, "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+
+                project_manager.run_once()
+                manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+
+                self.assertEqual(manifest["status"], "stage_in_epic")
+                self.assertEqual(manifest["current_epic_id"], f"{manifest['project_id']}_poc")
+                self.assertIn("poc-task-1", manifest["current_epic_task_ids"])
+                self.assertIn("poc-task-2", manifest["current_epic_task_ids"])
+                epic_queue_file = project_manager.EPIC_QUEUE_DIR / f"{manifest['project_id']}_poc.json"
+                self.assertTrue(epic_queue_file.exists(), "epic file must be in epic_queue")
+            finally:
+                self._restore_dirs(old)
+
+    def test_epic_completion_flips_to_pending_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, project_dir, manifest = self._setup_project_at_poc(root)
+            try:
+                decompose_task_id = manifest["current_task_id"]
+                epic_tasks = [
+                    {"task_id": "poc-done-1", "type": "backend", "prompt": "x",
+                     "workspace_path": "/tmp/poc", "depends_on": []},
+                ]
+                (project_dir / "poc_epic.json").write_text(json.dumps(epic_tasks), encoding="utf-8")
+                (project_manager.STATUS_DIR / f"{decompose_task_id}.json").write_text(
+                    json.dumps({"task_id": decompose_task_id, "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+                project_manager.run_once()
+
+                # All epic tasks succeed.
+                (project_manager.STATUS_DIR / "poc-done-1.json").write_text(
+                    json.dumps({"task_id": "poc-done-1", "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+                project_manager.run_once()
+                manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["status"], "stage_pending_approval")
+            finally:
+                self._restore_dirs(old)
+
+    def test_epic_failed_task_flags_board_meeting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, project_dir, manifest = self._setup_project_at_poc(root)
+            try:
+                decompose_task_id = manifest["current_task_id"]
+                epic_tasks = [
+                    {"task_id": "poc-fail-1", "type": "backend", "prompt": "x",
+                     "workspace_path": "/tmp/poc", "depends_on": []},
+                    {"task_id": "poc-fail-2", "type": "frontend", "prompt": "y",
+                     "workspace_path": "/tmp/poc", "depends_on": []},
+                ]
+                (project_dir / "poc_epic.json").write_text(json.dumps(epic_tasks), encoding="utf-8")
+                (project_manager.STATUS_DIR / f"{decompose_task_id}.json").write_text(
+                    json.dumps({"task_id": decompose_task_id, "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+                project_manager.run_once()
+
+                # First task succeeds, second fails.
+                (project_manager.STATUS_DIR / "poc-fail-1.json").write_text(
+                    json.dumps({"task_id": "poc-fail-1", "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+                (project_manager.STATUS_DIR / "poc-fail-2.json").write_text(
+                    json.dumps({"task_id": "poc-fail-2", "status": "error", "agent": "Pixel"}),
+                    encoding="utf-8",
+                )
+                project_manager.run_once()
+                manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["status"], "board_meeting")
+            finally:
+                self._restore_dirs(old)
+
+    def test_stage_pending_approval_dispatches_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = self._patch_dirs(root)
+            # Patch BOARD_REPORTS_DIR too.
+            old_board = project_manager.BOARD_REPORTS_DIR
+            project_manager.BOARD_REPORTS_DIR = root / "board_reports"
+            project_manager.BOARD_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                intake = project_manager.PROJECT_QUEUE_DIR / "rep.intake.json"
+                intake.write_text(json.dumps({
+                    "name": "Report Test",
+                    "ceo_brief": "test report dispatch",
+                    "workspace_path": "/tmp/rep",
+                }), encoding="utf-8")
+                project_manager.run_once()
+                project_dir = next(p for p in project_manager.PROJECTS_DIR.iterdir() if p.is_dir())
+                manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+                spec_task_id = manifest["current_task_id"]
+
+                (project_dir / "spec.md").write_text("# Spec", encoding="utf-8")
+                (project_manager.STATUS_DIR / f"{spec_task_id}.json").write_text(
+                    json.dumps({"task_id": spec_task_id, "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+                project_manager.run_once()
+                manifest = json.loads((project_dir / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["status"], "stage_pending_approval")
+
+                project_id = manifest["project_id"]
+                report_tasks = [
+                    f for f in project_manager.TASK_QUEUE_DIR.glob("task_*.json")
+                    if "report" in f.name
+                ]
+                self.assertGreater(len(report_tasks), 0, "at least one report task must be queued")
+                payload = json.loads(report_tasks[0].read_text(encoding="utf-8"))
+                self.assertEqual(payload["type"], "report")
+                self.assertIn(f"{project_id}_spec", payload["report_target"])
+                # report_task_ids recorded in manifest.
+                self.assertTrue(len(manifest.get("report_task_ids") or []) > 0)
+            finally:
+                project_manager.BOARD_REPORTS_DIR = old_board
+                self._restore_dirs(old)
+
+    def test_closing_project_dispatches_retros_per_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = self._patch_dirs(root)
+            old_board = project_manager.BOARD_REPORTS_DIR
+            project_manager.BOARD_REPORTS_DIR = root / "board_reports"
+            project_manager.BOARD_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                # Build a minimal project and fast-forward to closed by writing
+                # a manifest directly at closed status.
+                pid = "retro-proj-01"
+                project_dir = project_manager.PROJECTS_DIR / pid
+                (project_dir / "issues").mkdir(parents=True, exist_ok=True)
+                (project_dir / "retros").mkdir(parents=True, exist_ok=True)
+                (project_dir / "wireframes").mkdir(parents=True, exist_ok=True)
+                (project_dir / "decisions").mkdir(parents=True, exist_ok=True)
+                (project_dir / "brief.md").write_text("# Brief", encoding="utf-8")
+
+                task_a = f"{pid}-spec-aaa111"
+                task_b = f"{pid}-wire-bbb222"
+                # Fake status records with agent fields.
+                (project_manager.STATUS_DIR / f"{task_a}.json").write_text(
+                    json.dumps({"task_id": task_a, "status": "success", "agent": "Linus"}),
+                    encoding="utf-8",
+                )
+                (project_manager.STATUS_DIR / f"{task_b}.json").write_text(
+                    json.dumps({"task_id": task_b, "status": "success", "agent": "Pixel"}),
+                    encoding="utf-8",
+                )
+
+                manifest = {
+                    "project_id": pid,
+                    "name": "Retro Test",
+                    "ceo_brief": "test",
+                    "workspace_path": "/tmp/retro",
+                    "stage": "prod",
+                    "status": "stage_pending_approval",
+                    "open_action": "ceo",
+                    "stage_history": [],
+                    "task_history": [task_a, task_b],
+                    "current_task_id": task_b,
+                    "current_epic_id": None,
+                    "current_epic_task_ids": [],
+                    "report_task_ids": [],
+                    "retro_task_ids": [],
+                    "retros_dispatched": False,
+                    "created_at": "2026-05-25T00:00:00+00:00",
+                    "updated_at": "2026-05-25T00:00:00+00:00",
+                }
+                mpath = project_manager.PROJECTS_DIR / pid / "manifest.json"
+                mpath.write_text(json.dumps(manifest), encoding="utf-8")
+
+                # CEO approval flag triggers close.
+                (project_dir / "ceo_approval.flag").touch()
+                project_manager.run_once()
+
+                manifest = json.loads(mpath.read_text(encoding="utf-8"))
+                self.assertEqual(manifest["status"], "closed")
+                self.assertTrue(manifest.get("retros_dispatched"))
+                retro_task_ids = manifest.get("retro_task_ids") or []
+                self.assertGreaterEqual(len(retro_task_ids), 2)
+
+                retro_payloads = []
+                for tid in retro_task_ids:
+                    tf = project_manager.TASK_QUEUE_DIR / f"task_{tid}.json"
+                    self.assertTrue(tf.exists(), f"retro task file {tf.name} must exist")
+                    retro_payloads.append(json.loads(tf.read_text(encoding="utf-8")))
+
+                agents = {p["agent_target"] for p in retro_payloads}
+                self.assertIn("Linus", agents)
+                self.assertIn("Pixel", agents)
+
+                # Idempotent: second run_once must NOT add more retro tasks.
+                task_count_before = len(list(project_manager.TASK_QUEUE_DIR.glob("task_*retro*.json")))
+                project_manager.run_once()
+                task_count_after = len(list(project_manager.TASK_QUEUE_DIR.glob("task_*retro*.json")))
+                self.assertEqual(task_count_before, task_count_after)
+            finally:
+                project_manager.BOARD_REPORTS_DIR = old_board
+                self._restore_dirs(old)
+
 
 class RouterPoolRoutingTests(unittest.TestCase):
     def test_pool_round_robins(self):
-        original = dict(router.PERSONA_TOPICS)
-        router.PERSONA_TOPICS["frontend"] = ["branch_pixel_1", "branch_pixel_2"]
         router._POOL_CURSORS.pop("frontend", None)
         try:
             first, _ = router.route_payload({
@@ -424,11 +678,16 @@ class RouterPoolRoutingTests(unittest.TestCase):
             third, _ = router.route_payload({
                 "task_id": "p3", "type": "frontend", "prompt": "x", "workspace_path": "/tmp/p",
             })
-            self.assertEqual([first, second, third], ["branch_pixel_1", "branch_pixel_2", "branch_pixel_1"])
+            self.assertEqual([first, second, third], ["branch_pixel", "branch_brendan", "branch_pixel"])
         finally:
-            router.PERSONA_TOPICS.clear()
-            router.PERSONA_TOPICS.update(original)
             router._POOL_CURSORS.pop("frontend", None)
+
+    def test_senior_only_types_skip_pool(self):
+        for solo_type, expected in [("spec_review", "branch_linus"), ("decompose", "branch_linus"), ("report", "branch_ada")]:
+            branch_id, _ = router.route_payload({
+                "task_id": f"t-{solo_type}", "type": solo_type, "prompt": "x", "workspace_path": "/tmp/p",
+            })
+            self.assertEqual(branch_id, expected)
 
     def test_new_task_types_route_to_correct_persona(self):
         cases = [

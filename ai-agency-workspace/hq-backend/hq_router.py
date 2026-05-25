@@ -54,8 +54,28 @@ PERSONAS = {
 # `["branch_pixel_1", "branch_pixel_2"]` and `route_payload` picks the next
 # index from `_POOL_CURSORS`.
 PERSONA_TOPICS = {
+    # Singletons: QA work is intentionally sequential; Kent is the single
+    # sandbox-locked worker. Barbara (assistant) exists as a persona and can be
+    # tapped via an explicit branch_id, but the pool stays size-1 so Kent and
+    # Barbara never race on the same test fixtures.
     "qa": "branch_kent",
     "uat": "branch_kent",
+    # Strategic-tier task types are senior-only: junior personas pick up
+    # execution work but don't author specs / decomposition / final reports.
+    "spec_review": "branch_linus",
+    "decompose":   "branch_linus",
+    "report":      "branch_ada",
+    # Pools (Phase B). Senior + assistant per discipline. Round-robin lets the
+    # office process work in parallel without spinning up clones. Operators
+    # boot each pool member with `BRANCH_ID=branch_<name>` and the matching
+    # `BRANCH_PERSONA=<name>` env so worker_node loads the right invocation.
+    "frontend":             ["branch_pixel", "branch_brendan"],
+    "wireframe":            ["branch_pixel", "branch_brendan"],
+    "backend":              ["branch_linus", "branch_donald"],
+    "portfolio_query":      ["branch_linus", "branch_donald"],
+    "architecture":         ["branch_ada",   "branch_margaret"],
+    "retro":                ["branch_ada",   "branch_margaret"],
+    "portfolio_contribute": ["branch_grace", "branch_tim"],
 }
 
 _POOL_CURSORS = {}

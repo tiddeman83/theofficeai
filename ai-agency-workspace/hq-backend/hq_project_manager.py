@@ -41,7 +41,7 @@ PROJECTS_DIR = Path(os.getenv("HQ_PROJECTS_DIR", SCRIPT_DIR / "projects"))
 TASK_QUEUE_DIR = Path(os.getenv("HQ_QUEUE_DIR", SCRIPT_DIR / "task_queue"))
 EPIC_QUEUE_DIR = Path(os.getenv("HQ_EPIC_QUEUE_DIR", SCRIPT_DIR / "epic_queue"))
 STATUS_DIR = Path(os.getenv("HQ_STATUS_DIR", SCRIPT_DIR / "status_log"))
-PORTFOLIO_DIR = Path(os.getenv("HQ_PORTFOLIO_DIR", SCRIPT_DIR.parent.parent / "docs" / "portfolio"))
+PORTFOLIO_DIR = Path(os.getenv("HQ_PORTFOLIO_DIR", SCRIPT_DIR.parent / "docs" / "portfolio"))
 POLL_SECONDS = int(os.getenv("HQ_PROJECT_POLL_SECONDS", "5"))
 
 
@@ -60,6 +60,7 @@ STAGE_FLOW = [
 VALID_STATUSES = {
     "awaiting_cto_review",
     "stage_in_progress",
+    "stage_in_epic",
     "stage_pending_approval",
     "awaiting_ceo_answers",
     "spec_approved",
@@ -67,6 +68,8 @@ VALID_STATUSES = {
     "closed",
     "failed",
 }
+
+BOARD_REPORTS_DIR = Path(os.getenv("HQ_BOARD_REPORTS_DIR", SCRIPT_DIR.parent / "docs" / "board_reports"))
 
 
 def log(message):
@@ -117,7 +120,7 @@ def write_json_atomic(path, data):
 
 
 def ensure_directories():
-    for d in (PROJECT_QUEUE_DIR, PROJECTS_DIR, TASK_QUEUE_DIR, EPIC_QUEUE_DIR, STATUS_DIR, PORTFOLIO_DIR):
+    for d in (PROJECT_QUEUE_DIR, PROJECTS_DIR, TASK_QUEUE_DIR, EPIC_QUEUE_DIR, STATUS_DIR, PORTFOLIO_DIR, BOARD_REPORTS_DIR):
         try:
             d.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -282,6 +285,189 @@ def build_stage_prompt(manifest, stage):
     return f"Stage {stage['stage']} for project {project_id}."
 
 
+def build_report_prompt(manifest, stage_name):
+    project_id = manifest["project_id"]
+    project_dir = PROJECTS_DIR / project_id
+    report_target = BOARD_REPORTS_DIR / f"{project_id}_{stage_name}.md"
+    return (
+        f"Read {project_dir}/manifest.json, {project_dir}/brief.md, "
+        f"{project_dir}/spec.md (if exists), {project_dir}/wireframes/ (if exists), "
+        f"{project_dir}/issues/, {project_dir}/retros/, "
+        f"{project_dir}/uat_report.md (if exists), "
+        f"{project_dir}/{stage_name}_epic.json (if exists). "
+        f"Write Markdown board report to {report_target}. "
+        f"Sections: Stage, Outcomes, Risks, Open Issues, Next Stage Ask. <=200 words. Caveman."
+    )
+
+
+def dispatch_report_task(manifest, stage_name):
+    """Fire-and-forget: drop a report task for Ada. Does NOT set current_task_id."""
+    project_id = manifest["project_id"]
+    project_dir = PROJECTS_DIR / project_id
+    short_id = uuid.uuid4().hex[:6]
+    task_id = f"{project_id}-{stage_name}-report-{short_id}"
+    report_target = str(BOARD_REPORTS_DIR / f"{project_id}_{stage_name}.md")
+    payload = {
+        "task_id": task_id,
+        "type": "report",
+        "prompt": build_report_prompt(manifest, stage_name),
+        "workspace_path": str(project_dir),
+        "project_id": project_id,
+        "report_target": report_target,
+    }
+    queue_path = TASK_QUEUE_DIR / f"task_{task_id}.json"
+    if not write_json_atomic(queue_path, payload):
+        log_error(f"Failed to queue report task {task_id}.")
+        return manifest
+    log(f"Dispatched report task {task_id} for stage {stage_name}.")
+    # Append to report_task_ids (immutable).
+    updated = dict(manifest)
+    updated["report_task_ids"] = list(updated.get("report_task_ids") or []) + [task_id]
+    updated["updated_at"] = utc_now()
+    return updated
+
+
+def validate_epic_tasks(epic_data):
+    """Return list of task dicts if valid JSON array with required fields, else None."""
+    if not isinstance(epic_data, list):
+        return None
+    required = {"task_id", "type", "prompt", "workspace_path", "depends_on"}
+    for task in epic_data:
+        if not isinstance(task, dict):
+            return None
+        if not required.issubset(task.keys()):
+            return None
+        if not isinstance(task.get("task_id"), str) or not task["task_id"].strip():
+            return None
+        if not isinstance(task.get("depends_on"), list):
+            return None
+    return epic_data
+
+
+def dispatch_epic(manifest):
+    """Called after decompose succeeds on an epic-kind stage. Drops epic into epic_queue."""
+    project_id = manifest["project_id"]
+    stage_name = manifest["stage"]
+    project_dir = PROJECTS_DIR / project_id
+    epic_src = project_dir / f"{stage_name}_epic.json"
+
+    if not epic_src.exists():
+        log(f"Project {project_id} decompose done but no {stage_name}_epic.json; board meeting.")
+        return transition(manifest, status="board_meeting", open_action="ceo",
+                          note="decompose produced no epic file")
+
+    epic_data = read_json(epic_src)
+    tasks = validate_epic_tasks(epic_data)
+    if tasks is None:
+        log(f"Project {project_id} {stage_name}_epic.json invalid; board meeting.")
+        return transition(manifest, status="board_meeting", open_action="ceo",
+                          note=f"{stage_name}_epic.json failed validation")
+
+    epic_id = f"{project_id}_{stage_name}"
+    epic_dest = EPIC_QUEUE_DIR / f"{epic_id}.json"
+    if not write_json_atomic(epic_dest, tasks):
+        log_error(f"Failed to copy epic to queue for project {project_id}.")
+        return manifest
+
+    task_ids = [t["task_id"] for t in tasks]
+    log(f"Project {project_id} {stage_name} epic dispatched ({len(task_ids)} tasks).")
+    updated = transition(manifest, status="stage_in_epic", open_action=None,
+                         note=f"epic {epic_id} dispatched with {len(task_ids)} tasks")
+    updated["current_epic_id"] = epic_id
+    updated["current_epic_task_ids"] = task_ids
+    return updated
+
+
+def handle_epic_progress(manifest):
+    """Check status_log for every task in the running epic."""
+    if manifest.get("status") != "stage_in_epic":
+        return manifest
+
+    task_ids = manifest.get("current_epic_task_ids") or []
+    project_id = manifest["project_id"]
+    stage_name = manifest["stage"]
+    all_done = True
+
+    for tid in task_ids:
+        record = read_json(STATUS_DIR / f"{tid}.json")
+        task_status = record.get("status") if record else None
+        if task_status not in ("success", None):
+            # Any failure → board meeting.
+            log(f"Project {project_id} epic task {tid} returned {task_status}; board meeting.")
+            return transition(manifest, status="board_meeting", open_action="ceo",
+                              note=f"epic task {tid} returned {task_status}")
+        if task_status != "success":
+            all_done = False
+
+    if not all_done:
+        return manifest
+
+    log(f"Project {project_id} {stage_name} epic complete; awaiting CEO gate.")
+    updated = transition(manifest, status="stage_pending_approval", open_action="ceo",
+                         note=f"all epic tasks succeeded for {stage_name}")
+    updated = dispatch_report_task(updated, stage_name)
+    return updated
+
+
+def dispatch_retros(manifest):
+    """Dispatch one retro task per unique agent that touched the project."""
+    project_id = manifest["project_id"]
+    project_dir = PROJECTS_DIR / project_id
+
+    # Collect all task IDs ever assigned to this project.
+    candidate_ids = list(manifest.get("task_history") or [])
+    # Also sweep stage_history notes for task_ids and current_epic_task_ids.
+    for entry in manifest.get("stage_history") or []:
+        note = entry.get("note") or ""
+        # Extract task_id from notes like "stage X dispatched as task Y".
+        for word in note.split():
+            word = word.strip(".,")
+            if word and not word.startswith("stage"):
+                candidate_ids.append(word)
+    for tid in manifest.get("current_epic_task_ids") or []:
+        candidate_ids.append(tid)
+
+    # Read status records to find agents.
+    agents_seen = set()
+    for tid in candidate_ids:
+        if not tid:
+            continue
+        record = read_json(STATUS_DIR / f"{tid}.json")
+        if record and isinstance(record.get("agent"), str) and record["agent"].strip():
+            agents_seen.add(record["agent"].strip())
+
+    retro_ids = list(manifest.get("retro_task_ids") or [])
+    for agent in sorted(agents_seen):
+        short_id = uuid.uuid4().hex[:6]
+        task_id = f"{project_id}-retro-{agent.lower()}-{short_id}"
+        payload = {
+            "task_id": task_id,
+            "type": "retro",
+            "agent_target": agent,
+            "prompt": (
+                f"You are {agent}. Write {project_dir}/retros/{agent}.md. "
+                f"Sections: What Went Well, What Hurt, Skill To Capture. "
+                f"Read manifest.json and any task artefacts you produced. "
+                f"Max 300 words. Caveman."
+            ),
+            "workspace_path": str(project_dir),
+            "project_id": project_id,
+            "branch_id": f"branch_{agent.lower()}",
+        }
+        queue_path = TASK_QUEUE_DIR / f"task_{task_id}.json"
+        if write_json_atomic(queue_path, payload):
+            log(f"Dispatched retro task {task_id} for agent {agent}.")
+            retro_ids.append(task_id)
+        else:
+            log_error(f"Failed to queue retro task for agent {agent}.")
+
+    updated = dict(manifest)
+    updated["retro_task_ids"] = retro_ids
+    updated["retros_dispatched"] = True
+    updated["updated_at"] = utc_now()
+    return updated
+
+
 def dispatch_stage_task(manifest):
     """Drop a router-compatible task for the project's current stage owner."""
     stage = current_stage_def(manifest)
@@ -315,6 +501,8 @@ def dispatch_stage_task(manifest):
         note=f"stage {stage['stage']} dispatched as task {task_id}",
     )
     updated["current_task_id"] = task_id
+    # Track every task_id ever dispatched for retro scanning.
+    updated["task_history"] = list(updated.get("task_history") or []) + [task_id]
     return updated
 
 
@@ -359,13 +547,19 @@ def handle_active_project(manifest):
             note="open_questions.md awaiting CEO",
         )
 
+    # Epic-kind stages: decompose produced an epic file; hand off to epic runner.
+    if stage.get("kind") == "epic":
+        return dispatch_epic(manifest)
+
     log(f"Project {project_id} stage {stage['stage']} complete; awaiting CEO gate approval.")
-    return transition(
+    updated = transition(
         manifest,
         status="stage_pending_approval",
         open_action="ceo",
         note=f"task {task_id} success",
     )
+    updated = dispatch_report_task(updated, stage["stage"])
+    return updated
 
 
 def handle_ceo_gates(manifest):
@@ -389,7 +583,11 @@ def handle_ceo_gates(manifest):
         next_def = next_stage(manifest.get("stage"))
         if next_def is None:
             log(f"Project {project_id} fully shipped; marking closed.")
-            return transition(manifest, stage="closed", status="closed", open_action=None, note="final stage approved")
+            closed = transition(manifest, stage="closed", status="closed", open_action=None, note="final stage approved")
+            # Dispatch retros only on first close transition.
+            if not closed.get("retros_dispatched"):
+                closed = dispatch_retros(closed)
+            return closed
         log(f"Project {project_id} advancing {manifest['stage']} -> {next_def['stage']}.")
         manifest = transition(
             manifest,
@@ -426,6 +624,7 @@ def run_once():
             continue
         try:
             advanced = handle_active_project(manifest)
+            advanced = handle_epic_progress(advanced)
             advanced = handle_ceo_gates(advanced)
         except Exception:
             log_error(f"Project {project_dir.name} crashed:\n{traceback.format_exc()}")

@@ -130,24 +130,73 @@ These are the only style rules I will be opinionated about. Everything else is t
 
 ## Persona-authored changes
 
-If your PR was largely written by a Branch Office persona (Linus, Ada, Pixel, Kent, Grace) running through the system itself:
+If your PR was largely written by a Branch Office persona (Linus, Ada, Pixel, Kent, Grace, or an assistant) running through the system itself:
 
 1. The PR title should be human-readable and **not** Caveman. A human reviews PRs; speak to them.
 2. The PR body should include the originating task ID and the persona, e.g.:
 
    ```
-   Task: studiebuddy-arch-001
-   Persona: Ada (Claude Code)
+   Task: studiebuddy-v1-spec-abc123
+   Persona: Linus (Codex)
+   Project: StudiBuddy V1
+   Stage: spec
    ```
 3. The first review pass is on **you**, the human who routed the task. Don't push agent output straight to `main` without reading it.
 
 ### Adding a persona
 
-1. Create a folder under `ai-agency-workspace/hq-backend/personas/<name>/`.
-2. Drop in `persona.md` (Caveman mandate), `contract.md` (input/output shape), `bootstrap.md` (first-run greeting), and optionally `codex_invocation.md` if the persona runs under Codex.
-3. Register the persona in `hq-backend/hq_router.py` under the `PERSONAS` mapping (`task_type → persona name`).
+1. Create a folder under `ai-agency-workspace/hq-backend/personas/<type>/<name>/` where `<type>` is `seniors/`, `assistants/`, or `specialists/`.
+2. Drop in `persona.md` (Caveman mandate), `contract.md` (input/output shape), `bootstrap.md` (first-run greeting), and optionally `codex_invocation.md` (Codex-only prepend).
+3. Register the persona:
+   - Add to `hq-backend/hq_router.py` `PERSONAS` dict (task_type → persona name).
+   - If pooled (assistant), add to `PERSONA_TOPICS` pool list; otherwise to the singleton mapping.
 4. If the persona maps to a CLI not already supported, extend `build_agent_command()` in `branch-daemon/worker_node.py`.
-5. Document the persona in [README.md](README.md#the-roster).
+5. For seniors, add a LinkedIn-style profile at `docs/team/{name}.linkedin.md`.
+6. Document the persona in [README.md](README.md#the-roster) **Seniors**, **Assistants**, or **Specialists** section.
+7. Add persona-specific skills to `hq-backend/skills/{name}/*.md`.
+
+### Adding a project stage
+
+To extend the project lifecycle:
+
+1. Append a new entry to `STAGE_FLOW` in `hq-backend/hq_project_manager.py`:
+   ```python
+   {"stage": "review",  "owner": "SteveJobs", "task_type": "code_review", "kind": "task"}
+   ```
+2. Register the task type in `hq-backend/hq_router.py` `PERSONAS` dict.
+3. Add the stage to `PERSONA_TOPICS` with the routing persona/pool.
+4. Extend `build_stage_prompt()` in `hq_project_manager.py` with a branch for your new stage.
+5. Add tests to `tests/test_v2_contracts.py` covering manifest state transitions.
+
+### Reporting an issue from inside an agent
+
+From a running agent, publish an issue to the project via the worker's `publish_issue()` helper:
+
+```python
+publish_issue(
+    client=mqtt_client,
+    project_id="studiebuddy-v1",
+    agent="Linus",
+    task_id="studiebuddy-v1-spec-abc123",
+    severity="high",  # or "block"
+    subject="Spec contradicts wireframe on auth flow",
+    body="See open_questions.md lines 15-20.",
+    requires="cto"  # "ceo", "cto", or None
+)
+```
+
+If `severity=block, requires=cto`, the project_manager pauses dispatch (sets status=board_meeting) and waits for the CEO's decision file at `projects/{id}/decisions/{id}.md`.
+
+### Caveman commit rules
+
+All changes:
+- Keep messages short and logic-forward.
+- No pleasantries or narration in code.
+- PR titles are human-readable; commit bodies are Caveman.
+
+Changes to the project lifecycle (hq_project_manager.py, STAGE_FLOW, persona routing, etc.):
+- MUST include a regression test in `tests/test_v2_contracts.py`.
+- MUST describe the state transition(s) affected in the PR body.
 
 ---
 
